@@ -9,6 +9,7 @@
 #define RESULT 1
 #define FINISH 2
 #define RANGESIZE 100000
+#define QUEUE_SIZE 5
 
 // struktura do przedziału dla slave
 typedef struct {
@@ -73,7 +74,7 @@ int main(int argc, char **argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &proccount);
 
     if (proccount < 2) {
-        if (myrank == 0) printf("Program wymaga co najmniej 2 procesów (1 Master, 1+ Slave).\n");
+        if (myrank == 0) printf("Program wymaga co najmniej 2 procesów (1 master, co najmniej 1 slave).\n");
         MPI_Finalize();
         return 0;
     }
@@ -87,9 +88,7 @@ int main(int argc, char **argv) {
             if (!small_sieve[p])
                 for (long long i = p * p; i <= sqrt_n; i += p) small_sieve[i] = 1;
     }
-    MPI_Bcast(small_sieve, sqrt_n + 1, MPI_CHAR, 0, MPI_COMM_WORLD);
-
-    int N = 4; // rozmiar kolejki FIFO (paczki danych w obiegu na jednego slave'a)
+    MPI_Bcast(small_sieve, sqrt_n + 1, MPI_CHAR, 0, MPI_COMM_WORLD); // blokujący broadcast na początku
 
     if (myrank == 0) {
         // MASTER
@@ -100,7 +99,7 @@ int main(int argc, char **argv) {
         long long global_primes = 0, global_twins = 0;
         
         int num_slaves = proccount - 1;
-        int total_slots = num_slaves * N;
+        int total_slots = num_slaves * QUEUE_SIZE;
         
         // alokacja duzych tablic dla komunikacji non-blocking (buforowanie)
         TaskMsg *send_buffers = malloc(total_slots * sizeof(TaskMsg));
@@ -115,11 +114,11 @@ int main(int argc, char **argv) {
 
         int active_requests = 0;
 
-        // asynchroniczny initial batch - kazdy worker dostaje paczkę N zadań (każde z zadania ląduje w osobnym buforze okienka)
-        for (int w = 0; w < num_slaves; w++) {
+        // asynchroniczny initial batch - kazdy worker dostaje paczkę QUEUE_SIZE zadań
+        for (int w = 0; w < num_slaves; w++) { // iteracja po dostępnych slave'ach
             int slave_id = w + 1;
-            for (int q = 0; q < N; q++) {
-                int idx = w * N + q; // plaski index 1D
+            for (int q = 0; q < QUEUE_SIZE; q++) { // wypełnianie kolejki dla danmego slave
+                int idx = w * QUEUE_SIZE + q; // plaski index 1D, po wprowadzeniu kolejek - np. slave 1 ma od 1 od 5 a slave 2 od 6 do 10
                 if (current_a <= FINAL_NUMBER) {
                     send_buffers[idx].low = current_a;
                     send_buffers[idx].high = (current_a + RANGESIZE - 1 > FINAL_NUMBER) ? FINAL_NUMBER : current_a + RANGESIZE - 1;
@@ -128,8 +127,8 @@ int main(int argc, char **argv) {
                     MPI_Isend(&send_buffers[idx], 2, MPI_LONG_LONG, slave_id, DATA, MPI_COMM_WORLD, &send_requests[idx]);
                     MPI_Irecv(&recv_buffers[idx], sizeof(ResultMsg), MPI_BYTE, slave_id, RESULT, MPI_COMM_WORLD, &recv_requests[idx]);
                     
-                    current_a = send_buffers[idx].high + 1;
-                    active_requests++;
+                    current_a = send_buffers[idx].high + 1; // ustawiamy początkową liczbę (tą zakładkę) na o 1 więcej niż górny przedział przydzielony ostatnio
+                    active_requests++; // dzięki temu upewnimy się niżej że każdy request będzie obsłużony
                 } else {
                     // brak poczatkowych zadan na zapelnienie okienek - od razu wysylamy sygnal zakonczenia tego slotu
                     MPI_Isend(NULL, 0, MPI_LONG_LONG, slave_id, FINISH, MPI_COMM_WORLD, &send_requests[idx]);
@@ -142,36 +141,36 @@ int main(int argc, char **argv) {
             int idx;
             MPI_Status status;
             
-            // Waitany od razu wyłapuje bufor ktory skonczył prace (daje nam to od ręki numer okienka 'idx')
+            // Waitany od razu wyłapuje bufor ktory skonczył prace
             MPI_Waitany(total_slots, recv_requests, &idx, &status);
             
             global_primes += recv_buffers[idx].primes;
             global_twins += recv_buffers[idx].twins;
             active_requests--;
 
-            // likwidacja wyscigu po stronie mastera: upewniamy się, że poprzedni wysył (Isend) dla tego okienka się zakończył zanim nadpiszemy taska
+            // likwidacja wyscigu po stronie mastera
             MPI_Wait(&send_requests[idx], MPI_STATUS_IGNORE);
 
-            int slave_id = (idx / N) + 1;
+            int slave_id = (idx / QUEUE_SIZE) + 1; // odzyskanie numeru slave'a z indeksu
 
             if (current_a <= FINAL_NUMBER) {
-                // mamy jeszcze co robic, wiec sypiemy zadan do zrodla ktore wlasnie zwolnilo okienko
+                // mamy jeszcze co robic
                 send_buffers[idx].low = current_a;
                 send_buffers[idx].high = (current_a + RANGESIZE - 1 > FINAL_NUMBER) ? FINAL_NUMBER : current_a + RANGESIZE - 1;
                 
                 MPI_Isend(&send_buffers[idx], 2, MPI_LONG_LONG, slave_id, DATA, MPI_COMM_WORLD, &send_requests[idx]);
                 MPI_Irecv(&recv_buffers[idx], sizeof(ResultMsg), MPI_BYTE, slave_id, RESULT, MPI_COMM_WORLD, &recv_requests[idx]);
                 
-                current_a = send_buffers[idx].high + 1;
+                current_a = send_buffers[idx].high + 1; // ustawiamy początkową liczbę (tą zakładkę) na o 1 więcej niż górny przedział przydzielony ostatnio
                 active_requests++;
             } else {
-                // brak zadan - wysylamy tag FINISH aby ubic to okienko wewnatrz procesu slave
+                // brak zadan - wysylamy tag FINISH
                 MPI_Isend(NULL, 0, MPI_LONG_LONG, slave_id, FINISH, MPI_COMM_WORLD, &send_requests[idx]);
                 recv_requests[idx] = MPI_REQUEST_NULL; // wyciszamy nasluch na ten slot
             }
         }
 
-        // na koniec musimy miec pewnosc, ze wszystkie wyslane tagi FINISH faktycznie zostaly wypchniete do sieci
+        // na koniec musimy miec pewnosc, ze wszystkie wyslane tagi FINISH faktycznie zostaly wypchniete
         MPI_Waitall(total_slots, send_requests, MPI_STATUSES_IGNORE);
 
         gettimeofday(&ins__tstop, NULL);
@@ -188,52 +187,49 @@ int main(int argc, char **argv) {
     } else {
         // SLAVE
         
-        // tworzymy bufory dla kolejki
-        TaskMsg tasks[N];
-        ResultMsg results[N];
-        MPI_Request recv_reqs[N];
-        MPI_Request send_reqs[N];
+        // tworzymy bufory dla kolejki opierając się na define
+        TaskMsg tasks[QUEUE_SIZE];
+        ResultMsg results[QUEUE_SIZE];
+        MPI_Request recv_reqs[QUEUE_SIZE];
+        MPI_Request send_reqs[QUEUE_SIZE];
 
-        for (int i = 0; i < N; i++) {
+        for (int i = 0; i < QUEUE_SIZE; i++) {
             send_reqs[i] = MPI_REQUEST_NULL;
-            // pre-fetching: od razu wystawiamy Irecv na zapelnienie naszej wewnetrznej tuby FIFO
+            // pre-fetching: od razu wystawiamy Irecv na zapelnienie naszej wewnetrznej kolejki FIFO
             MPI_Irecv(&tasks[i], 2, MPI_LONG_LONG, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &recv_reqs[i]);
         }
 
-        int active_slots = N;
+        int active_slots = QUEUE_SIZE;
 
         // dopóki mamy aktywne okienka w ktorych dzialamy
         while (active_slots > 0) {
             int q;
             MPI_Status status;
             
-            // Waitany działa jak zjadanie z FIFO - bierze to, co pierwsze spadło z sieci do dowolnego z N buforów.
-            // Jeśli żaden pakiet jeszcze nie dotarł, proces czeka (nie pali CPU w busy-waitingu).
-            MPI_Waitany(N, recv_reqs, &q, &status);
+            // Waitany wyciąga z FIFO
+            MPI_Waitany(QUEUE_SIZE, recv_reqs, &q, &status);
 
             if (status.MPI_TAG == FINISH) {
                 active_slots--;
-                // UWAGA: MPI_Waitany automatycznie ustawia przetworzony recv_reqs[q] na MPI_REQUEST_NULL,
-                // więc nasłuch na ten slot jest poprawnie wygaszany.
             } else {
                 // obliczenia na bieżącym zakresie ze slotu
                 ResultMsg res = count_in_range(tasks[q].low, tasks[q].high, FINAL_NUMBER, small_sieve, sqrt_n);
 
-                // POZBYCIE SIE WYSCIGU!
-                // czekamy z pewnoscia, ze poprzedni Isend dla TEGO SAMEGO okienka wyslal sie i zwolnil zasoby pamieci.
+                // TU BYŁ WYŚCIG
+                // czekamy z pewnoscia, ze poprzedni Isend dla TEGO SAMEGO okienka wyslal sie
                 MPI_Wait(&send_reqs[q], MPI_STATUS_IGNORE);
 
-                // zapisujemy bezpiecznie nowy wynik do odseparowanego od innych iteracji bufora i rzucamy do mastera
+                // zapisujemy bezpiecznie nowy wynik
                 results[q] = res;
                 MPI_Isend(&results[q], sizeof(ResultMsg), MPI_BYTE, 0, RESULT, MPI_COMM_WORLD, &send_reqs[q]);
 
-                // wypychamy kolejne nasluchiwanie do rury (pre-fetching do wlasnie zuzytego zadania)
+                // wypychamy kolejne nasluchiwanie do rury
                 MPI_Irecv(&tasks[q], 2, MPI_LONG_LONG, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &recv_reqs[q]);
             }
         }
         
-        // na sam koniec upewniamy się, że przed zabiciem procesu wszystkie wyniki zdazyly wyleciec rura po naszej stronie
-        MPI_Waitall(N, send_reqs, MPI_STATUSES_IGNORE);
+        // na sam koniec upewniamy się, że przed zabiciem procesu wszystkie wyniki zdazyly wyleciec rura
+        MPI_Waitall(QUEUE_SIZE, send_reqs, MPI_STATUSES_IGNORE);
     }
 
     free(small_sieve);
