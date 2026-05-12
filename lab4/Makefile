@@ -1,4 +1,4 @@
-MPICC=mpicc
+CC=gcc
 CFLAGS=-O2
 LIBS=-lm
 OMPFLAGS=-fopenmp
@@ -10,12 +10,11 @@ ifeq (run,$(firstword $(MAKECMDGOALS)))
   $(eval $(RUN_ARGS):;@:)
 endif
 
-
 main: main.c
-	${CC} ${CFLAGS} ${OMPFLAGS} $< -o main ${LIBS}
+	$(CC) $(CFLAGS) $(OMPFLAGS) $< -o main $(LIBS)
 
 run:
 	./main $(RUN_ARGS)
 
 clean:
-	rm main
+	rm -f main

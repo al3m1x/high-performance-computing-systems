@@ -3,7 +3,11 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <omp.h>
-#include "numgen.c"
+#include <math.h>
+
+// Usunięto numgen.c
+
+#define RANGESIZE 100000
 
 int main(int argc, char **argv) {
 
@@ -13,10 +17,9 @@ int main(int argc, char **argv) {
   // set number of threads
   omp_set_num_threads(ins__args.n_thr);
 
-  // program input argument
-  long inputArgument = ins__args.arg; 
-  unsigned long int *numbers = (unsigned long int*)malloc(inputArgument * sizeof(unsigned long int));
-  numgen(inputArgument, numbers);
+  // Pobranie granic przedziału (analogicznie do Twojego kodu MPI)
+  long long INITIAL_NUMBER = ins__args.start;
+  long long FINAL_NUMBER = ins__args.stop;
 
   struct timeval ins__tstart, ins__tstop;
   gettimeofday(&ins__tstart, NULL);
@@ -25,69 +28,84 @@ int main(int argc, char **argv) {
   // RUN YOUR COMPUTATIONS HERE (INCLUDING OPENMP STUFF)
   // -------------------------------------------------------------------
 
-  // 1. Find the maximum value in the generated numbers to determine Sieve size
-  unsigned long int max_val = 0;
+  long long prime_count = 0;
+  long long twin_prime_pairs = 0;
 
-  #pragma omp parallel for reduction(max:max_val)
-  for (long i = 0; i < inputArgument; i++) {
-      if (numbers[i] > max_val) {
-          max_val = numbers[i];
-      }
-  }
+  // 1. Sekwencyjne małe sito do sqrt(FINAL_NUMBER)
+  long long sqrt_n = (long long)sqrt(FINAL_NUMBER);
+  char *small_sieve = (char *)calloc(sqrt_n + 1, sizeof(char));
 
-  // 2. Allocate Sieve array (up to max_val + 2 to safely check twin primes)
-  unsigned char *sieve = (unsigned char *)malloc((max_val + 3) * sizeof(unsigned char));
-  if (sieve == NULL) {
-      fprintf(stderr, "Memory allocation failed for Sieve. Numbers are too large.\n");
-      free(numbers);
-      return 1;
-  }
-
-  // Initialize the sieve array to 1 (true)
-  #pragma omp parallel for
-  for (unsigned long int i = 0; i <= max_val + 2; i++) {
-      sieve[i] = 1;
-  }
-  sieve[0] = 0;
-  sieve[1] = 0;
-
-  // 3. Sieve of Eratosthenes (Parallelized)
-  // Outer loop is sequential, inner loop (crossing out multiples) is highly parallel
-  for (unsigned long int p = 2; p * p <= max_val + 2; p++) {
-      if (sieve[p]) {
-          #pragma omp parallel for schedule(auto)
-          for (unsigned long int i = p * p; i <= max_val + 2; i += p) {
-              sieve[i] = 0;
+  for (long long p = 2; p * p <= sqrt_n; p++) {
+      if (!small_sieve[p]) {
+          for (long long i = p * p; i <= sqrt_n; i += p) {
+              small_sieve[i] = 1;
           }
       }
   }
 
-  // 4. Count Primes and Twin Primes in the numbers array
-  long prime_count = 0;
-  long twin_prime_pairs = 0;
+  // 2. Równoległe przetwarzanie porcjami (Segmented Sieve)
+  #pragma omp parallel reduction(+:prime_count, twin_prime_pairs)
+  {
+      // Prywatna tablica dla każdego wątku (+2 elementy na zakładkę dla liczb siostrzanych na krawędzi bloku)
+      char *mark = (char *)malloc((RANGESIZE + 2) * sizeof(char));
 
-  #pragma omp parallel for reduction(+:prime_count, twin_prime_pairs)
-  for (long i = 0; i < inputArgument; i++) {
-      unsigned long int num = numbers[i];
+      // Dynamiczny przydział bloków (chunków) do wątków
+      #pragma omp for schedule(dynamic)
+      for (long long low = INITIAL_NUMBER; low <= FINAL_NUMBER; low += RANGESIZE) {
+          
+          long long high = low + RANGESIZE - 1;
+          if (high > FINAL_NUMBER) high = FINAL_NUMBER;
 
-      if (sieve[num]) {
-          prime_count++;
+          // Limit sprawdzania rozszerzony o 2, by łatwo wyłapać siostrzane na granicy
+          long long check_limit = (high + 2 > FINAL_NUMBER) ? FINAL_NUMBER : high + 2;
+          long long size = check_limit - low + 1;
 
-          // Count a twin prime pair if (num, num+2) are both prime.
-          // Because we built the sieve up to max_val + 2, this is memory-safe.
-          if (sieve[num + 2]) {
-              twin_prime_pairs++;
+          // Wyzerowanie prywatnej tablicy mark
+          for(long long i = 0; i < size; i++) {
+              mark[i] = 0;
+          }
+
+          // Krawędziowy przypadek dla 0 i 1
+          if (low <= 1) {
+              if (low == 0) { mark[0] = 1; mark[1] = 1; }
+              else if (low == 1) mark[0] = 1;
+          }
+
+          // Wykreślanie wielokrotności w obecnym małym przedziale
+          for (long long p = 2; p <= sqrt_n; p++) {
+              if (!small_sieve[p]) {
+                  long long start = (low <= p) ? p * p : ((low + p - 1) / p) * p;
+                  for (long long j = start; j <= check_limit; j += p) {
+                      mark[j - low] = 1;
+                  }
+              }
+          }
+
+          // Zliczanie w tym przedziale
+          for (long long i = 0; i < (high - low + 1); i++) {
+              long long current_num = low + i;
+              
+              if (!mark[i]) {
+                  prime_count++;
+                  
+                  // Sprawdzenie pary siostrzanej
+                  if (current_num + 2 <= FINAL_NUMBER && !mark[i + 2]) {
+                      twin_prime_pairs++;
+                  }
+              }
           }
       }
+
+      // Zwolnienie prywatnej pamięci wątku na koniec sekcji równoległej
+      free(mark);
   }
+
+  free(small_sieve);
 
   // Print results
-  printf("Total Primes Found: %ld\n", prime_count);
-  printf("Total Twin Prime Pairs: %ld\n", twin_prime_pairs);
-
-  // Free memory to prevent leaks
-  free(sieve);
-  free(numbers);
+  printf("Zakres: [%lld, %lld]\n", INITIAL_NUMBER, FINAL_NUMBER);
+  printf("Total Primes Found: %lld\n", prime_count);
+  printf("Total Twin Prime Pairs: %lld\n", twin_prime_pairs);
 
   // -------------------------------------------------------------------
   // END OF COMPUTATIONS

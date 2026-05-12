@@ -8,24 +8,29 @@
 
 typedef struct InputArgs
 {
-  long arg;
+  long long start;   // Added start
+  long long stop;    // Added stop
   int n_thr;
-  char marker[64];
+  char marker[64]; 
 } Args;
 
 void parseArgs(Args* aptr, int* argc, char** argv)
 {
+  // We now expect 3 arguments after the program name: start, stop, n_thr
   if (*argc < 4)
   {
-    fprintf(stderr, "[Error] To few arguments!\nUsage:\n%s [a] [marker] [n_thr]\n", argv[0]);
+    fprintf(stderr, "[Error] Too few arguments!\nUsage:\n%s [start] [stop] [n_thr]\n", argv[0]);
     exit(EXIT_FAILURE);
   }
   else
   {
-    aptr->arg = atoll(argv[1]);
-    memset((aptr->marker), 0, 64);
-    strncpy((aptr->marker), argv[2], 63);
+    aptr->start = atoll(argv[1]);
+    aptr->stop = atoll(argv[2]);
     aptr->n_thr = atoi(argv[3]);
+    
+    // Set a default marker so ins__printtime in main.c doesn't print garbage
+    memset((aptr->marker), 0, 64);
+    strncpy((aptr->marker), "OpenMP Sieve", 63); 
   }
   *argc = 1;
   return;
