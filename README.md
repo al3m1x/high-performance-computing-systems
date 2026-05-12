@@ -26,10 +26,16 @@ make
 make clean
 ```
 
-## Running
+## Running for lab1-lab3
 
 ```bash
 make run 1 100000000 L2
+```
+
+## Running for lab4
+
+```bash
+make run 1 100000000 4
 ```
 
 Example with different parameters:
