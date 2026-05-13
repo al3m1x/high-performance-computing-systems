@@ -1,0 +1,31 @@
+K = N / size                                      // dł. lokalnego fragmentu
+MPI_Scatter(tab_glowna, tablica_lokalna, K, 0)    // podział na procesy
+
+QuickSort(tablica_lokalna)                        // każdy sortuje swój fragment
+
+if rank != 0:
+    MPI_Isend(tablica_lokalna, 0, 0, req_wys)     // nieblokujące wysłanie do Mastera
+    MPI_Wait(req_wys)                             // upewnienie o zakończeniu transferu
+
+else if rank == 0:
+    tablica_glowna = tablica_lokalna 
+    bufory_odbiorcze = tablica[size - 1][K]
+    requests = tablica[size - 1]
+    
+    for i = 1 to size - 1:
+        MPI_Irecv(bufory_odbiorcze[i-1], i, 0, requests[i-1]) // nasłuch od wszystkich naraz
+        
+    for i = 1 to size - 1:
+        indeks_gotowy = 0
+        MPI_Waitany(requests, indeks_gotowy)                  // czekaj na pierwszego gotowego
+        nowa_paczka = bufory_odbiorcze[indeks_gotowy]
+        tablica_glowna = funkcja_merge(tablica_glowna, nowa_paczka) // scalaj na bieżąco (2-way)
+        
+    if N % 2 == 1:
+        mediana = tablica_glowna[floor(N/2)]
+    else:
+        mediana = (tablica_glowna[N/2 - 1] + tablica_glowna[N/2]) / 2.0
+        
+    wypisz(mediana)
+
+MPI_Finalize()

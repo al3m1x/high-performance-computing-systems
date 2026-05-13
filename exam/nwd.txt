@@ -1,0 +1,32 @@
+MPI_Bcast(liczby, N, 0)                               // rozesłanie pełnej tablicy
+
+max_local = 0
+for (i = rank; i < N - 1; i += size):                 // zoptymalizowany podział (wiersze)
+    for (j = i + 1; j < N; j++):
+        g = gcd(liczby[i], liczby[j])
+        if g > max_local:
+            max_local = g
+
+if rank != 0:
+    MPI_Isend(max_local, 0, 0, req_wys)               // nieblokujące wysłanie wyniku
+    MPI_Wait(req_wys)                                 // upewnienie o końcu transferu
+
+else if rank == 0:
+    max_global = max_local                            // początkowy max to wynik Mastera
+    bufory_odbiorcze = tablica[size - 1]
+    requests = tablica[size - 1]
+    
+    for i = 1 to size - 1:
+        MPI_Irecv(bufory_odbiorcze[i-1], i, 0, requests[i-1]) // nasłuch od wszystkich
+        
+    for i = 1 to size - 1:
+        indeks_gotowy = 0
+        MPI_Waitany(requests, indeks_gotowy)                  // czekaj na pierwszego gotowego
+        otrzymane_nwd = bufory_odbiorcze[indeks_gotowy]
+        
+        if otrzymane_nwd > max_global:                        // aktualizuj max na bieżąco
+            max_global = otrzymane_nwd
+            
+    wypisz(max_global)
+
+MPI_Finalize()
