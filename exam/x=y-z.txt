@@ -1,0 +1,44 @@
+// 1. Inicjalizacja
+MPI_Init()             // Inicjalizacja środowiska MPI
+rank = MPI_Comm_rank()
+size = MPI_Comm_size() // wiemy z treści, że to będzie 256
+
+// 2. Dystrybucja danych
+// Zakładamy, że proces rank==0 wczytał wcześniej tablicę liczby[N]
+MPI_Bcast(liczby, N, 0)
+
+// 3. Przygotowanie lokalnej tablicy wyników (flag)
+lokalne_wyniki = tablica[N] wypełniona zerami (0)
+
+// 4. Równoległe sprawdzanie (podział karuzelowy po indeksach)
+for (i = rank; i < N; i += size):
+    x = liczby[i]
+    znaleziono = false
+    
+    // Szukamy pary y i z. 
+    // (Opcjonalnie: można tu zastosować optymalizację np. posortować 
+    // kopię tablicy i szukać binarnie, ale na kolokwium brute-force wystarczy)
+    for j = 0 to N - 1:
+        for k = 0 to N - 1:
+            if x == (liczby[j] - liczby[k]):
+                znaleziono = true
+                break // przerywamy pętlę k, znaleźliśmy parę!
+                
+        if znaleziono == true:
+            break // przerywamy pętlę j, x spełnia warunek!
+            
+    // Zaznaczamy sukces w naszej lokalnej tablicy flag
+    if znaleziono == true:
+        lokalne_wyniki[i] = 1
+
+// 5. Zebranie flag do jednej globalnej tablicy na procesie 0
+globalne_wyniki = tablica[N] // rezerwacja pamięci u Mastera
+MPI_Reduce(lokalne_wyniki, globalne_wyniki, N, MPI_MAX, root=0)
+
+// 6. Wypisanie ostatecznych wyników przez Mastera
+if rank == 0:
+    for i = 0 to N - 1:
+        if globalne_wyniki[i] == 1:
+            wypisz(liczby[i])
+
+MPI_Finalize()

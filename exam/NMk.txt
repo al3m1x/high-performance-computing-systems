@@ -1,0 +1,98 @@
+MPI_Init()                                          // Inicjalizacja MPI
+rank = MPI_Comm_rank()                              // Pobranie rangi procesu
+size = MPI_Comm_size()                              // Całkowita liczba procesów
+
+MPI_Bcast(liczby, N, 0)                             // Master rozsyła pełną tablicę do wszystkich
+MPI_Bcast(M, 1, 0)                                  // Rozesłanie szukanej sumy M
+
+min_k_lokalne = INF                                 // Domyślnie zakladamy, że proces nie znajdzie k
+
+for k = rank + 1 to N step size:                    // Pętla karuzelowa po długościach podzbiorów
+    znaleziono = false                              // Flaga sukcesu dla konkretnego k
+    
+    dla każdego unikalnego podzbioru o długości k:  // Przeszukiwanie kombinacji (np. rekurencyjnie)
+        suma = oblicz_sume(podzbior)                // Sumowanie elementów wygenerowanego podzbioru
+        jeśli suma == M:                            // Trafienie w szukaną sumę
+            znaleziono = true
+            przerwij pętlę kombinacji               // Przerywamy szukanie innych podzbiorów dla tego k
+            
+    jeśli znaleziono == true:
+        min_k_lokalne = k                           // Zapisujemy nasz lokalny rekord
+        przerwij pętlę k                            // Skoro k rośnie, to pierwsze znalezione jest najmniejsze!
+
+MPI_Reduce(min_k_lokalne, min_k_globalne, MIN, 0)   // Zebranie najmniejszych k ze wszystkich procesów
+
+jeśli rank == 0:                                    // Master ogłasza ostateczny wynik
+    jeśli min_k_globalne == INF:
+        wypisz "Nie istnieje podzbiór o takiej sumie (brak k)."
+    inaczej:
+        wypisz "Najmniejsza liczba k elementów to: " + min_k_globalne
+
+MPI_Finalize()                                      // Zakończenie programu
+
+
+==============================================ALBO MASTER SLAVE=====================================================
+
+MPI_Init()                                          // Inicjalizacja MPI
+rank = MPI_Comm_rank()                              // Pobranie rangi
+size = MPI_Comm_size()                              // Liczba procesów (size = P)
+
+MPI_Bcast(liczby, N, 0)                             // Rozesłanie danych wejściowych
+MPI_Bcast(M, 1, 0)                                  // Rozesłanie sumy docelowej
+ZABIJ = -1                                          // Tag kończący pracę
+
+if rank == 0:                                       // ================= MASTER =================
+    aktywne_slavey = size - 1                       // Licznik pracujących robotników
+    nastepne_k = 1                                  // Kolejne zadanie do przydzielenia
+    min_k_glob = INF                                // Najlepszy wynik
+    
+    // Tablice do obsługi komunikacji nieblokującej
+    bufory_in = tablica[size]                       // Bufory na wyniki od Slave'ów
+    reqs_in = tablica[size]                         // Requesty dla Irecv
+    bufory_out = tablica[size]                      // Bufory na k wysyłane przez Isend
+    
+    for i = 1 to size - 1:                          // Rozdanie pierwszych zadań
+        if nastepne_k <= N:
+            bufory_out[i] = nastepne_k
+            MPI_Isend(bufory_out[i], i, 0, req_out) // Nieblokujące wysłanie k
+            MPI_Irecv(bufory_in[i], i, 1, reqs_in[i]) // Nieblokujące nasłuchiwanie wyniku
+            nastepne_k++
+        else:
+            MPI_Send(ZABIJ, i, 0)                   // Brak zadań na start - zabij Slave'a
+            aktywne_slavey--
+
+    while aktywne_slavey > 0:                       // Pętla zarządzająca
+        idx = 0
+        MPI_Waitany(reqs_in, idx)                   // Czekaj, aż KTÓRYKOLWIEK Slave odpowie
+        
+        (k_z_wyniku, sukces) = bufory_in[idx]       // Pobranie wyniku z bufora
+        if sukces == true:
+            min_k_glob = min(min_k_glob, k_z_wyniku)
+
+        if min_k_glob == INF and nastepne_k <= N:   // Jeśli szukamy dalej i są zadania
+            bufory_out[idx] = nastepne_k
+            MPI_Isend(bufory_out[idx], idx, 0, req_out) 
+            MPI_Irecv(bufory_in[idx], idx, 1, reqs_in[idx]) 
+            nastepne_k++
+        else:                                       // Jeśli mamy wynik lub brak zadań
+            MPI_Send(ZABIJ, idx, 0)                 // Wyślij sygnał końca
+            aktywne_slavey--
+
+    print(min_k_glob)                               // Wypisanie ostatecznego k
+
+else:                                               // ================= SLAVE =================
+    while true:
+        MPI_Recv(k, 0, 0)                           // Odbiór zadania od Mastera
+        if k == ZABIJ: break                        // Wyjście z pętli
+
+        wynik_lok = false
+        for podzbior in kombinacje(k):              // Brute-force dla długości k
+            if suma(podzbior) == M:
+                wynik_lok = true
+                break
+        
+        raport = (k, wynik_lok)                     // Przygotowanie paczki zwrotnej
+        MPI_Isend(raport, 0, 1, req_back)           // Nieblokujący zwrot do Mastera
+        MPI_Wait(req_back)                          // Czekaj na zwolnienie bufora raportu
+
+MPI_Finalize()                                      // Koniec programu
