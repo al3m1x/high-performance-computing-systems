@@ -1,0 +1,79 @@
+MPI_Init()
+rank = MPI_Comm_rank()
+size = MPI_Comm_size()
+
+ZADANIE_STOP = -1
+ROZMIAR_KAFELKA = 1000
+
+if rank == 0:                                       // ================= MASTER =================
+    kolejka_zadan = stworz_kolejke_wszystkich_kafelkow(M_obrazow, ROZMIAR_KAFELKA)
+    aktywne_slavey = size - 1
+    
+    // TABLICE DO KOMUNIKACJI NIEBLOKUJĄCEJ (Indeksowane od 1 do size-1)
+    reqs_in = tablica_requestow[size]               // Oczekiwanie na sygnał "skończyłem"
+    reqs_out = tablica_requestow[size]              // Śledzenie wysyłania zadań
+    bufor_sygnalow = tablica_int[size]              // Bufory na potwierdzenia od Slave'ów
+    
+    // WAŻNE: Każdy Slave musi mieć swój własny bufor w pamięci Mastera na czas wysyłki!
+    bufor_zadan_out = tablica_zadan[size]           
+    
+    // 1. Wstępne rozdanie "biletów" (nieblokująco) i nasłuch
+    dla i od 1 do size - 1:
+        jeśli kolejka_zadan.nie_pusta():
+            bufor_zadan_out[i] = kolejka_zadan.pobierz()
+            MPI_Isend(bufor_zadan_out[i], i, reqs_out[i])
+            MPI_Irecv(bufor_sygnalow[i], i, reqs_in[i]) // Zastawiamy sidła na jego powrót
+        inaczej:
+            bufor_zadan_out[i] = ZADANIE_STOP
+            MPI_Isend(bufor_zadan_out[i], i, reqs_out[i])
+            aktywne_slavey--
+            
+    // 2. Dyspozytornia (Master reaguje natychmiast na wolnego Slave'a)
+    dopóki aktywne_slavey > 0:
+        slave_idx = 0
+        MPI_Waitany(reqs_in, &slave_idx)            // Czekamy na PIERWSZEGO, który zapisał kafelek
+        
+        // Slave_idx zgłosił gotowość. Dajemy mu nową pracę.
+        jeśli kolejka_zadan.nie_pusta():
+            bufor_zadan_out[slave_idx] = kolejka_zadan.pobierz()
+            MPI_Isend(bufor_zadan_out[slave_idx], slave_idx, reqs_out[slave_idx])
+            
+            // Ponownie ustawiamy nasłuch na ten konkretny węzeł
+            MPI_Irecv(bufor_sygnalow[slave_idx], slave_idx, reqs_in[slave_idx])
+        inaczej:
+            bufor_zadan_out[slave_idx] = ZADANIE_STOP
+            MPI_Isend(bufor_zadan_out[slave_idx], slave_idx, reqs_out[slave_idx])
+            aktywne_slavey--
+
+else:                                               // ================= SLAVE =================
+    dopóki true:
+        MPI_Irecv(moje_zadanie, 0, req_zadanie)
+        MPI_Wait(req_zadanie)                       // Fizycznie czekamy aż zadanie spłynie z sieci
+        
+        jeśli moje_zadanie == ZADANIE_STOP:
+            break
+            
+        // --- 1. ODWROTNE MAPOWANIE (Inverse Mapping) ---
+        (src_x, src_y, src_w, src_h) = oblicz_zrodlo(moje_zadanie, -moje_zadanie.kat)
+        
+        // --- 2. RÓWNOLEGŁE WEJŚCIE/WYJŚCIE (Odczyt małego obszaru) ---
+        plik_in = MPI_File_open("obraz_" + moje_zadanie.ID, ODCZYT)
+        bufor_in = alokuj(src_w * src_h)
+        MPI_File_read_at(plik_in, offset(src_x, src_y), bufor_in)
+        MPI_File_close(plik_in)
+        
+        // --- 3. OBLICZENIA ---
+        bufor_out = alokuj(ROZMIAR_KAFELKA * ROZMIAR_KAFELKA)
+        wykonaj_obrot(bufor_in, bufor_out, moje_zadanie.kat)
+        
+        // --- 4. ZAPIS DOCELOWY ---
+        plik_out = MPI_File_open("wynik_" + moje_zadanie.ID, ZAPIS)
+        MPI_File_write_at(plik_out, offset(moje_zadanie.x, moje_zadanie.y), bufor_out)
+        MPI_File_close(plik_out)
+        
+        // --- 5. NIEBLOKUJĄCE ODESŁANIE STATUSU GOTOWOŚCI ---
+        sygnal = 1
+        MPI_Isend(sygnal, 0, req_sygnal)
+        MPI_Wait(req_sygnal)                        // Upewniamy się, że sygnał poszedł w świat przed nową iteracją
+
+MPI_Finalize()

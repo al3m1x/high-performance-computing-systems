@@ -1,0 +1,64 @@
+(Parallel Tree Search)
+Zamiast zgadywać, musimy inteligentnie podzielić przestrzeń poszukiwań. Każdy pojedynczy ruch generuje nowe stany (gałęzie w drzewie).
+
+Podział na gałęzie: Jeśli rozwiniemy drzewo wszystkich możliwych ruchów na głębokość np. 3 ruchów, otrzymamy kilka tysięcy unikalnych "stanów startowych".
+
+Rozdanie zadań: Master rozdaje te stany startowe do procesów-robotników (Slave'ów).
+
+Lokalne szukanie: Każdy Slave bierze swój stan i przeszukuje jego dalsze odgałęzienia lokalnie (np. algorytmem BFS lub IDA*).
+
+Wczesne przerwanie (Kluczowe!): Gdy tylko jeden proces znajdzie sekwencję rozwiązującą, natychmiast wysyła asynchroniczny sygnał "STOP" do Mastera, który rozsyła go do reszty, aby nie liczyli na darmo.
+
+==================================================IMPLEMENTACJA===================================================
+
+MPI_Init()                                          // Inicjalizacja MPI
+rank = MPI_Comm_rank()
+size = MPI_Comm_size()
+
+ZNAK_STOP = -1                                      // Sygnał do wczesnego przerwania
+
+if rank == 0:                                       // ================= MASTER =================
+    stan_pocz = wczytaj_kostke()
+    kolejka_zadan = generuj_stany_glebokosc_K(stan_pocz) // Np. generuje 1000 rozgałęzień
+    
+    aktywne_slavey = size - 1
+    for i = 1 to size - 1:                          // Wstępne rozdanie gałęzi do przeszukania
+        wyslij_zadanie(kolejka_zadan.pobierz(), i)
+        
+    while aktywne_slavey > 0:
+        (wynik, nadawca) = MPI_Irecv_czekaj()       // Czekamy na odpowiedź od kogokolwiek
+        
+        if wynik.czy_rozwiazano == true:            // Ktoś znalazł rozwiązanie!
+            print("Rozwiązanie: " + wynik.sekwencja)
+            
+            for j = 1 to size - 1:                  // Zabijamy wszystkie pozostałe obliczenia
+                MPI_Isend(ZNAK_STOP, j)
+            break                                   // Przerywamy główną pętlę Mastera
+            
+        else if kolejka_zadan.nie_pusta():          // Slave nie znalazł, ale mamy inne gałęzie
+            wyslij_zadanie(kolejka_zadan.pobierz(), nadawca)
+        else:
+            MPI_Isend(ZNAK_STOP, nadawca)           // Brak zadań, zwalniamy Slave'a
+            aktywne_slavey--
+
+else:                                               // ================= SLAVE =================
+    while true:
+        stan_do_sprawdzenia = MPI_Recv(0)           // Odbieramy zadanie od Mastera (rank 0)
+        
+        if stan_do_sprawdzenia == ZNAK_STOP: 
+            break                                   // Otrzymano sygnał końca, zwalniamy Slave'a
+            
+        // Flaga sprawdzana w tle, aby wiedzieć, czy inny węzeł już wygrał
+        czy_wygral_ktos_inny = MPI_Iprobe(0, ZNAK_STOP) 
+        
+        if czy_wygral_ktos_inny == false:
+            // Lokalny algorytm szukania w grafie
+            lok_wynik = szukaj_rozwiazania(stan_do_sprawdzenia) 
+            MPI_Send(lok_wynik, 0)                  // Odesłanie sukcesu lub porażki do Mastera
+
+MPI_Finalize()
+
+
+"Uwaga do funkcji szukaj_rozwiazania:
+Funkcja ta reprezentuje klasyczny, sekwencyjny algorytm przeszukiwania przestrzeni stanów (drzewa). 
+Zamiast pisać go od zera, zakładam użycie algorytmu IDA* (Iterative Deepening A*)."

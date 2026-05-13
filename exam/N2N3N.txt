@@ -1,0 +1,62 @@
+MPI_Init()
+rank = MPI_Comm_rank()
+size = MPI_Comm_size()
+
+ZNAK_STOP = -1
+lista_plikow = [ "plik_1", ..., "plik_50" ]
+
+if rank == 0:                                       // ================= MASTER =================
+    aktywne_slavey = size - 1
+    nastepny_plik_idx = 0
+    
+    // Bufory na komunikację nieblokującą (po jednym na każdego Slave'a)
+    wyniki_buf = tablica_wynikow[size]
+    reqs_in = tablica_requestow[size]
+    reqs_out = tablica_requestow[size]
+    
+    // 1. Wstępne rozesłanie pracy (nieblokująco)
+    dla i od 1 do size - 1:
+        jeśli nastepny_plik_idx < 50:
+            MPI_Isend(lista_plikow[nastepny_plik_idx], i, reqs_out[i])
+            nastepny_plik_idx++
+            // Od razu ustawiamy nasłuchiwanie na wynik od tego Slave'a
+            MPI_Irecv(wyniki_buf[i], i, reqs_in[i])
+        inaczej:
+            MPI_Isend(ZNAK_STOP, i, req_temp)
+            aktywne_slavey--
+
+    // 2. Pętla obsługi zdarzeń (Master jako dyspozytor)
+    dopóki aktywne_slavey > 0:
+        slave_idx = 0
+        // Czekamy na kogokolwiek, kto skończył przydzielone zadanie
+        MPI_Waitany(reqs_in, &slave_idx) 
+        
+        przetworz_wyniki(wyniki_buf[slave_idx])
+        
+        jeśli nastepny_plik_idx < 50:
+            // Wysyłamy kolejny plik do wolnego Slave'a
+            MPI_Isend(lista_plikow[nastepny_plik_idx], slave_idx, reqs_out[slave_idx])
+            nastepny_plik_idx++
+            // Ponownie ustawiamy nasłuchiwanie na następny raport od niego
+            MPI_Irecv(wyniki_buf[slave_idx], slave_idx, reqs_in[slave_idx])
+        inaczej:
+            // Brak plików - wysyłamy sygnał zakończenia
+            MPI_Isend(ZNAK_STOP, slave_idx, req_temp)
+            aktywne_slavey--
+
+inaczej:                                               // ================= SLAVE =================
+    dopóki true:
+        MPI_Irecv(nazwa_pliku, 0, req_zadanie)
+        MPI_Wait(req_zadanie)                       // Czekamy na nazwę pliku od Mastera
+        
+        jeśli nazwa_pliku == ZNAK_STOP:
+            break
+            
+        tresc = wczytaj_plik_z_dysku(nazwa_pliku)   // Parallel I/O
+        znaleziska = szukaj_wszystkich(tresc, wzorzec_M)
+        
+        // Odsyłamy wyniki i od razu wracamy do początku pętli prosić o nowy plik
+        MPI_Isend(znaleziska, 0, req_powrot)
+        MPI_Wait(req_powrot)                        // Zabezpieczenie bufora przed nadpisaniem
+
+MPI_Finalize()

@@ -1,0 +1,68 @@
+========================PODSUMOWANIE==============================
+"Rozwiązałbym to za pomocą programowania hybrydowego (MPI + OpenMP), aby zminimalizować ruch sieciowy:
+
+Uruchamiamy 2 procesy MPI (po 1 na każdy węzeł).
+
+Proces Master (węzeł 0) zatrzymuje 500 elementów, a drugie 500 wysyła do Procesu 1 (węzeł 1) za pomocą MPI_Send.
+
+Wewnątrz każdego węzła uruchamiana jest sekcja równoległa OpenMP z 8 wątkami (dzięki rdzeniom i Hyperthreadingowi). Wykonują one równoległy lokalny algorytm sortowania (np. Parallel Merge Sort) na swoich 500 elementach w pamięci współdzielonej.
+
+Proces 1 odsyła posortowane 500 elementów do Mastera.
+
+Master wykonuje pojedynczą operację szybkiego scalenia (2-way merge) dwóch 500-elementowych, posortowanych tablic."
+
+==================================================================
+
+
+int provided
+MPI_Init_thread(MPI_THREAD_FUNNELED, &provided) // Inicjalizacja MPI ze wsparciem dla wątków
+rank = MPI_Comm_rank()                          // Pobranie rangi MPI (0 lub 1)
+
+lokalna_tab = tablica[500]                      // Pamięć na lokalną porcję danych węzła
+
+if rank == 0:                                   // ================= WĘZEŁ 0 (MASTER) =================
+    tab_glowna = tablica[1000] (losowe liczby)  // Inicjalizacja całej tablicy na Masterze
+    lokalna_tab = tab_glowna[0 do 499]          // Master zostawia sobie pierwszą połowę
+    MPI_Send(tab_glowna[500 do 999], 1, 0)      // Master wysyła drugą połowę siecią do Węzła 1
+    
+else if rank == 1:                              // ================= WĘZEŁ 1 (SLAVE) =================
+    MPI_Recv(lokalna_tab, 0, 0)                 // Odbiór swoich 500 elementów od Mastera
+
+// ================= RÓWNOLEGŁE SORTOWANIE W PAMIĘCI WSPÓŁDZIELONEJ (Wspólne dla obu) =================
+omp_set_num_threads(8)                          // Wymuszenie 8 wątków (4 rdzenie * 2 HT)
+
+#pragma omp parallel                            // Otwarcie strefy równoległej OpenMP
+{
+    #pragma omp single                          // Tylko jeden wątek odpala zadanie startowe
+    ParallelMergeSort(lokalna_tab)              // Sortowanie zadaniowe (tasks) przez 8 wątków
+}
+// Tu następuje ukryta bariera - czekamy aż wszystkie 8 wątków skończy sortować lokalną_tab
+
+// ================= KOMUNIKACJA KOŃCOWA I SCALENIE (MPI) =================
+if rank == 1:
+    MPI_Send(lokalna_tab, 0, 1)                 // Węzeł 1 odsyła swoją posortowaną połówkę
+    
+else if rank == 0:
+    odebrana_tab = tablica[500]
+    MPI_Recv(odebrana_tab, 1, 1)                // Master odbiera posortowaną połówkę z Węzła 1
+    
+    wynik = merge(lokalna_tab, odebrana_tab)    // Szybkie scalenie dwóch posortowanych połówek (O(N))
+    
+MPI_Finalize()                                  // Zamknięcie środowiska MPI
+
+
+void ParallelMergeSort(int tab[], int lewy, int prawy) {
+    if (lewy < prawy) {
+        int srodek = lewy + (prawy - lewy) / 2;
+
+        #pragma omp task shared(tab)               // Sekcja delegowania zadań do wolnych wątków w puli
+        ParallelMergeSort(tab, lewy, srodek);      // Wątek A: zajmij się lewą połową
+
+        #pragma omp task shared(tab)
+        ParallelMergeSort(tab, srodek + 1, prawy); // Wątek B: zajmij się prawą połową
+
+        #pragma omp taskwait                       // Główny wątek tego wywołania czeka, aż zadania potomne skończą
+
+        merge(tab, lewy, srodek, prawy);           // Kiedy obie połowy są posortowane, scalamy je
+    }
+}

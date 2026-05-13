@@ -1,0 +1,34 @@
+global_top1 = -1                                // Współdzielona zmienna na najlepszy wynik
+global_top2 = -1                                // Współdzielona zmienna na drugi wynik
+
+#pragma omp parallel                            // Otwarcie strefy równoległej dla puli wątków
+{
+    loc_top1 = -1                               // Prywatna zmienna lidera (w cache'u wątku)
+    loc_top2 = -1                               // Prywatna zmienna wicelidera
+    
+    #pragma omp for nowait                      // Rozdział indeksów bez bariery końcowej
+    for i = 0 to N - 1:
+        if dane[i] > loc_top1:                  // Wątek znalazł nowego lokalnego lidera
+            loc_top2 = loc_top1                 // Stary lider spada na drugie miejsce
+            loc_top1 = dane[i]
+        else if dane[i] > loc_top2:             // Wątek znalazł nowego lokalnego wicelidera
+            loc_top2 = dane[i]
+            
+    // ==== FAZA REDUKCJI (Poza pętlą) ====
+    // Każdy wątek ma teraz swoje lokalne wyniki. Scalamy je ze zmiennymi globalnymi.
+    
+    #pragma omp critical                        // Sekcja krytyczna (wywołana tylko 1 raz na wątek!)
+    {
+        if loc_top1 > global_top1:              // Lokalny lider przebija globalnego?
+            global_top2 = global_top1           // Stary globalny lider spada poziom niżej
+            global_top1 = loc_top1
+        else if loc_top1 > global_top2:         // Lokalny lider przebija tylko wicelidera?
+            global_top2 = loc_top1
+            
+        if loc_top2 > global_top2:              // Lokalny wicelider przebija globalnego?
+            global_top2 = loc_top2
+    }
+}                                               // Zamknięcie strefy równoległej
+
+print("Największa: " + global_top1)
+print("Druga największa: " + global_top2)

@@ -1,0 +1,99 @@
+MPI_Init()
+rank = MPI_Comm_rank()
+size = MPI_Comm_size()
+
+ZNAK_STOP = -1
+ROZMIAR_PACZKI = 100
+
+if rank == 0:                                       // ================= MASTER =================
+    dl_min = sprawdz_najkrotszy_plik()
+    aktywne_slavey = size - 1
+    nastepny_idx = 0
+    
+    globalny_max_dl = 0
+    globalny_najlepszy_ciag = ""
+    
+    // TABLICE DO KOMUNIKACJI NIEBLOKUJĄCEJ (Indeksowane od 1 do size-1)
+    reqs_in = tablica_requestow[size]               // Uchwyty do śledzenia statusu odpowiedzi
+    buf_in_max = tablica_int[size]                  // Bufory na wyniki (długość)
+    buf_in_ciag = tablica_string[size]              // Bufory na wyniki (podciągi)
+    buf_out_idx = tablica_int[size]                 // WAŻNE: Każdy Slave musi mieć swój bufor nadawczy!
+    
+    // 1. Wstępne rozdanie paczek i ROZPOCZĘCIE NASŁUCHIWANIA
+    for i = 1 to size - 1:
+        if nastepny_idx < dl_min:
+            buf_out_idx[i] = nastepny_idx
+            MPI_Isend(buf_out_idx[i], i, req_out)   // Wysłanie zadania w tle
+            
+            // Od razu przygotowujemy się na odbiór od tego konkretnego Slave'a
+            MPI_Irecv((buf_in_max[i], buf_in_ciag[i]), i, reqs_in[i]) 
+            nastepny_idx += ROZMIAR_PACZKI
+        else:
+            buf_out_idx[i] = ZNAK_STOP
+            MPI_Send(buf_out_idx[i], i)             // Tu zwykły Send, bo zwalniamy proces
+            aktywne_slavey--
+            
+    // 2. Pętla dynamicznego rozdawania zadań (Samo gęste!)
+    while aktywne_slavey > 0:
+        idx = 0
+        MPI_Waitany(reqs_in, idx)                   // Czekamy na PIERWSZEGO Slave'a, który skończy
+        
+        // Wyciągamy dane z bufora konkretnego Slave'a (który właśnie odpowiedział)
+        lok_max = buf_in_max[idx]
+        lok_ciag = buf_in_ciag[idx]
+        
+        // Aktualizacja globalnego rekordu
+        if lok_max > globalny_max_dl:
+            globalny_max_dl = lok_max
+            globalny_najlepszy_ciag = lok_ciag
+            
+        // Przydzielanie nowych zadań (Dla tego samego, zwolnionego Slave'a)
+        if nastepny_idx < dl_min:
+            buf_out_idx[idx] = nastepny_idx
+            MPI_Isend(buf_out_idx[idx], idx, req_out)
+            
+            // Ponownie ustawiamy sidła nasłuchujące na kolejny wynik od niego
+            MPI_Irecv((buf_in_max[idx], buf_in_ciag[idx]), idx, reqs_in[idx])
+            nastepny_idx += ROZMIAR_PACZKI
+        else:
+            buf_out_idx[idx] = ZNAK_STOP
+            MPI_Isend(buf_out_idx[idx], idx, req_out)
+            aktywne_slavey--
+            
+    print("Najdłuższy wspólny ciąg to: " + globalny_najlepszy_ciag)
+
+else:                                               // ================= SLAVE =================
+    najkrotszy_plik = wczytaj_najkrotszy()
+    dl_min = dlugosc(najkrotszy_plik)
+    
+    while true:
+        MPI_Irecv(start_idx, 0, req_zadanie)        // Nieblokujący odbiór polecenia
+        MPI_Wait(req_zadanie)                       // Czekamy na fizyczne dotarcie liczby
+        
+        if start_idx == ZNAK_STOP:
+            break
+            
+        koniec_idx = min(start_idx + ROZMIAR_PACZKI, dl_min)
+        lok_max = 0
+        lok_naj_ciag = ""
+        
+        for i = start_idx to koniec_idx - 1:
+            for dlugosc_podciagu = (lok_max + 1) to (dl_min - i):
+                
+                kandydat = pobierz_podciag(najkrotszy_plik, i, dlugosc_podciagu)
+                wystepuje_wszedzie = true
+                
+                for kazdy_plik in pozostale_pliki:
+                    if kazdy_plik NIE ZAWIERA(kandydat):
+                        wystepuje_wszedzie = false
+                        break
+                        
+                if wystepuje_wszedzie == true:
+                    lok_max = dlugosc_podciagu
+                    lok_naj_ciag = kandydat
+                    
+        // Odsyłamy paczkę w tle, żeby sam narzut sieciowy nie blokował Slave'a
+        MPI_Isend( (lok_max, lok_naj_ciag), 0, req_wynik ) 
+        MPI_Wait(req_wynik)                         // Zabezpieczamy bufory przed kolejną iteracją pętli
+
+MPI_Finalize()

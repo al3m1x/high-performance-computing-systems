@@ -1,0 +1,52 @@
+MPI_Init()
+rank = MPI_Comm_rank()
+size = MPI_Comm_size()                                  // P węzłów
+
+N = wymiar_obrazu
+M = wymiar_wzorca
+ZNAK_STOP = -1
+
+// 1. OBLICZANIE GRANIC DLA WĘZŁA (Dekompozycja dziedziny 1D)
+wiersze_na_wezel = N / size
+start_row = rank * wiersze_na_wezel
+
+// ZAKŁADKA: Każdy (oprócz ostatniego) czyta dodatkowe M-1 wierszy!
+if rank == size - 1:
+    end_row = N - 1
+else:
+    end_row = start_row + wiersze_na_wezel - 1 + (M - 1)
+
+// 2. NIEZALEŻNY ODCZYT (Ominięcie problemu braku RAM!)
+wzorzec = wczytaj_wzorzec_MxM()                         // M<<N, więc wzorzec mieści się w RAM
+moj_fragment = wczytaj_z_dysku(start_row, end_row)      // Każdy czyta TYLKO swój pas
+
+czy_znaleziono = false
+
+// 3. LOKALNE WYSZUKIWANIE Z ASYNCHRONICZNYM PRZERWANIEM
+// Przesuwamy okno o rozmiarach MxM po naszym lokalnym fragmencie
+for y = 0 to wysokosc(moj_fragment) - M:
+    
+    // Optymalizacja: Co jakiś czas nasłuchujemy, czy ktoś inny już wygrał
+    if y % 50 == 0:
+        czy_ktos_wyslal_stop = MPI_Iprobe(MPI_ANY_SOURCE, ZNAK_STOP)
+        if czy_ktos_wyslal_stop:
+            break                                       // Ktoś znalazł! Przerywamy naszą pracę
+            
+    for x = 0 to N - M:
+        if sprawdz_piksele(moj_fragment, wzorzec, x, y) == true:
+            czy_znaleziono = true
+            
+            // Obliczamy prawdziwe koordynaty (Y musi uwzględniać nasz start_row)
+            global_y = start_row + y
+            print("Znalazłem wzorzec! Startuje w: X=" + x + ", Y=" + global_y)
+            
+            // Skoro znaleźliśmy, "zabijamy" obliczenia na reszcie klastra
+            for i = 0 to size - 1:
+                if i != rank:
+                    MPI_Isend(ZNAK_STOP, i, req)
+            break
+            
+    if czy_znaleziono == true or czy_ktos_wyslal_stop == true:
+        break                                           // Całkowite wyjście z pętli
+
+MPI_Finalize()

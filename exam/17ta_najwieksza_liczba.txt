@@ -1,0 +1,24 @@
+MPI_Init()                                          // Inicjalizacja MPI
+rank = MPI_Comm_rank()
+size = MPI_Comm_size()                              // size = 16
+
+// KROK 1: Równy podział pracy na wszystkie 16 procesów (w tym Mastera)
+lokalna_tab = MPI_Scatter(tab_glowna, N / size, 0)  // Każdy dostaje N/16 elementów
+
+// KROK 2: Każdy szuka tylko 17 największych u siebie
+lokalne_top17 = znajdz_17_najwiekszych(lokalna_tab) // Nie trzeba sortować całej tablicy!
+
+// KROK 3: Zebranie wszystkich kandydatów u Mastera (Gather)
+// Wszyscy wysyłają swoje 17 liczb, Master odbiera paczkę 272 liczb (16 * 17)
+globalne_kandydaty = MPI_Gather(lokalne_top17, 17, 0) 
+
+// KROK 4: Master znajduje tę jedyną
+if rank == 0:
+    // Sortujemy malejąco tylko zebrane 272 liczby
+    posortowane = posortuj_malejaco(globalne_kandydaty) 
+    
+    // Zwracamy element pod indeksem 16 (czyli 17-tą z kolei największą wartość)
+    wynik = posortowane[16]                             
+    print("17-ta największa liczba to: " + wynik)
+
+MPI_Finalize()
