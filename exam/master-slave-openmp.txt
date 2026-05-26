@@ -1,0 +1,48 @@
+#include <omp.h>
+#include <iostream>
+
+struct Zadanie {
+    int id;
+};
+
+// Funkcja symulująca ciężką pracę niewolnika
+void przetworz_dane(Zadanie z) {
+    // Tu normalnie byłoby np. liczenie macierzy, u nas wystarczy pusty przebieg
+    int wynik = z.id * z.id; 
+}
+
+int main() {
+    int liczba_zadan = 10;
+    
+    // Tworzymy pulę 4 wątków
+    omp_set_num_threads(4);
+    
+    #pragma omp parallel
+    {
+        // Tylko 1 wątek wejdzie do środka, reszta staje na barierze na końcu bloku
+        #pragma omp single 
+        {
+            int master_id = omp_get_thread_num();
+            printf(">>> MASTER (Wątek %d) zaczyna generowac zadania...\n", master_id);
+            
+            for (int i = 0; i < liczba_zadan; i++) {
+                Zadanie z;
+                z.id = i;
+                
+                // Master pakuje zadanie i rzuca do puli
+                #pragma omp task firstprivate(z)
+                {
+                    // === TO MIEJSCE WYKONUJĄ SLAVE'Y ===
+                    int thread_id = omp_get_thread_num();
+                    printf("  Wątek %d (Slave) przetwarza zadanie nr %d\n", thread_id, z.id);
+                    przetworz_dane(z);
+                }
+            }
+            printf(">>> MASTER (Wątek %d) wygenerował wszystko. Idzie pomoc Slave'om!\n", master_id);
+            
+        } // <--- Niejawna bariera. Tutaj Master dołącza do reszty, żeby opróżnić kolejkę.
+    }
+    
+    printf("Wszystkie zadania zakonczone.\n");
+    return 0;
+}

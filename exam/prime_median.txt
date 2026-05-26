@@ -1,0 +1,104 @@
+MPI_Init()
+rank = MPI_Comm_rank()
+size = MPI_Comm_size()                      // size = 16
+
+ZNAK_STOP = -1
+ROZMIAR_PACZKI = 10000                      // Rozmiar przedziału do zbadania (np. 10 tysięcy liczb)
+N = wczytaj_N()
+
+if rank == 0:                               // ================= MASTER =================
+    aktywne_slavey = size - 1
+    aktualny_start = 2
+    
+    globalne_liczby_pierwsze = []           // Pusta lista na wyniki
+    
+    // TABLICE BUFORÓW (Niezbędne przy komunikacji nieblokującej!)
+    reqs_in = tablica_requestow[size]
+    reqs_out = tablica_requestow[size]
+    buf_out_start = tablica_int[size]       // Bufory wysyłkowe (początek przedziału)
+    buf_in_wyniki = tablica_paczek[size]    // Bufory odbiorcze (złożony typ: [ile_znaleziono, tablica_liczb])
+
+    // 1. Wstępne rozdanie paczek i nasłuch
+    for i = 1 to size - 1:
+        if aktualny_start <= N:
+            buf_out_start[i] = aktualny_start
+            MPI_Isend(buf_out_start[i], i, reqs_out[i])
+            MPI_Irecv(buf_in_wyniki[i], i, reqs_in[i])
+            aktualny_start += ROZMIAR_PACZKI
+        else:
+            buf_out_start[i] = ZNAK_STOP
+            MPI_Isend(buf_out_start[i], i, reqs_out[i])
+            aktywne_slavey--
+
+    // 2. Dyspozytornia (Nasłuchiwanie)
+    while aktywne_slavey > 0:
+        slave_idx = 0
+        MPI_Waitany(reqs_in, &slave_idx)    // Master blokuje się tylko do momentu, aż KTOKOLWIEK skończy
+        
+        // Zgrywamy znalezione liczby pierwsze z bufora do globalnego worka
+        dodaj_do_listy(globalne_liczby_pierwsze, buf_in_wyniki[slave_idx])
+        
+        // Dajemy zwolnionemu Slave'owi nową pracę
+        if aktualny_start <= N:
+            buf_out_start[slave_idx] = aktualny_start
+            MPI_Isend(buf_out_start[slave_idx], slave_idx, reqs_out[slave_idx])
+            MPI_Irecv(buf_in_wyniki[slave_idx], slave_idx, reqs_in[slave_idx])
+            aktualny_start += ROZMIAR_PACZKI
+        else:
+            buf_out_start[slave_idx] = ZNAK_STOP
+            MPI_Isend(buf_out_start[slave_idx], slave_idx, reqs_out[slave_idx])
+            aktywne_slavey--
+
+    // 3. Obliczenie mediany
+    posortuj_rosnaco(globalne_liczby_pierwsze) // Konieczne, bo asynchronicznie pakiety wracały w losowej kolejności!
+    dlugosc = rozmiar(globalne_liczby_pierwsze)
+    
+    if dlugosc % 2 == 1:
+        mediana = globalne_liczby_pierwsze[dlugosc / 2]
+    else:
+        mediana = (globalne_liczby_pierwsze[dlugosc / 2 - 1] + globalne_liczby_pierwsze[dlugosc / 2]) / 2.0
+        
+    print("Mediana to: " + mediana)
+
+else:                                       // ================= SLAVE (Double Buffering) =================
+    lokalne_wyniki[2]                       // Dwa niezależne bufory na wyniki
+    aktywny_buf = 0                         // Wskaźnik bieżącego bufora (0 lub 1)
+    
+    req_wynik = MPI_REQUEST_NULL            // Pusty uchwyt dla pierwszej iteracji (Wait od razu go przepuści)
+
+    while true:
+        // Odbiór nowego zadania od Mastera (tutaj czekamy, bo bez zadania nie mamy co liczyć)
+        MPI_Irecv(start_przedzialu, 0, req_zad)
+        MPI_Wait(req_zad)                   
+        
+        if start_przedzialu == ZNAK_STOP:
+            break
+            
+        koniec_przedzialu = min(start_przedzialu + ROZMIAR_PACZKI - 1, N)
+        
+        // Czyścimy bufor, do którego ZARAZ będziemy pisać
+        wyczysc(lokalne_wyniki[aktywny_buf])
+        
+        // --- 1. OBLICZENIA (Do bieżącego bufora) ---
+        for liczba = start_przedzialu to koniec_przedzialu:
+            if czy_pierwsza(liczba) == true:
+                dodaj(lokalne_wyniki[aktywny_buf], liczba)
+                
+        // --- 2. SYNCHRONIZACJA POPRZEDNIEJ WYSYŁKI ---
+        // Zanim wyślemy nową paczkę (i ew. nadpiszemy ten uchwyt), 
+        // upewniamy się, że poprzednia sieć skończyła transfer.
+        MPI_Wait(req_wynik)
+        
+        // --- 3. START WYSYŁKI W TLE ---
+        // Zlecamy karcie sieciowej wysyłkę świeżo policzonego bufora
+        MPI_Isend(lokalne_wyniki[aktywny_buf], 0, req_wynik)
+        
+        // --- 4. ZAMIANA BUFORÓW (Ping-Pong) ---
+        // Zmieniamy indeks. W następnej iteracji będziemy nadpisywać 
+        // drugi bufor, podczas gdy pierwszy bezpiecznie leci sobie przez sieć.
+        aktywny_buf = 1 - aktywny_buf
+
+    // Sprzątanie na sam koniec: czekamy aż ostatnia w historii paczka fizycznie dotrze do Mastera
+    MPI_Wait(req_wynik)
+
+MPI_Finalize()
