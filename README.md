@@ -57,8 +57,6 @@ test - Text marker for the execution time output.
 Note: The number of MPI processes (e.g., -np 2) is hardcoded directly in the Makefile.
 
 Example with different parameters:
-
-Example with different parameters:
 ```bash
 make run <param1> <param2> <param3>
 ``` 
