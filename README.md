@@ -38,6 +38,26 @@ make run 1 100000000 L2
 make run 1 100000000 4
 ```
 
+## Running for lab5
+
+```bash
+make run RUN_ARGS="1 500000000 test 4"
+```
+
+Parameters for RUN_ARGS:
+
+1 - Start of the range.
+
+500000000 - End of the range.
+
+test - Text marker for the execution time output.
+
+4 - Number of OpenMP threads per process.
+
+Note: The number of MPI processes (e.g., -np 2) is hardcoded directly in the Makefile.
+
+Example with different parameters:
+
 Example with different parameters:
 ```bash
 make run <param1> <param2> <param3>
