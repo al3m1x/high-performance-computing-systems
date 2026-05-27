@@ -165,7 +165,7 @@ int main(int argc, char **argv) {
                     send_buffers[idx].high = (current_a + MPI_RANGESIZE - 1 > FINAL_NUMBER) ? FINAL_NUMBER : current_a + MPI_RANGESIZE - 1;
                     
                     MPI_Isend(&send_buffers[idx], 2, MPI_LONG_LONG, slave_id, DATA, MPI_COMM_WORLD, &send_requests[idx]);
-                    MPI_Irecv(&recv_buffers[idx], sizeof(ResultMsg), MPI_BYTE, slave_id, RESULT, MPI_COMM_WORLD, &recv_requests[idx]);
+                    MPI_Irecv(&recv_buffers[idx], 2, MPI_LONG_LONG, slave_id, RESULT, MPI_COMM_WORLD, &recv_requests[idx]);
                     
                     current_a = send_buffers[idx].high + 1; 
                     active_requests++; 
@@ -194,7 +194,7 @@ int main(int argc, char **argv) {
                 send_buffers[idx].high = (current_a + MPI_RANGESIZE - 1 > FINAL_NUMBER) ? FINAL_NUMBER : current_a + MPI_RANGESIZE - 1;
                 
                 MPI_Isend(&send_buffers[idx], 2, MPI_LONG_LONG, slave_id, DATA, MPI_COMM_WORLD, &send_requests[idx]);
-                MPI_Irecv(&recv_buffers[idx], sizeof(ResultMsg), MPI_BYTE, slave_id, RESULT, MPI_COMM_WORLD, &recv_requests[idx]);
+                MPI_Irecv(&recv_buffers[idx], 2, MPI_LONG_LONG, slave_id, RESULT, MPI_COMM_WORLD, &recv_requests[idx]);
                 
                 current_a = send_buffers[idx].high + 1; 
                 active_requests++;
@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
                 MPI_Wait(&send_reqs[q], MPI_STATUS_IGNORE);
 
                 results[q] = res;
-                MPI_Isend(&results[q], sizeof(ResultMsg), MPI_BYTE, 0, RESULT, MPI_COMM_WORLD, &send_reqs[q]);
+                MPI_Isend(&results[q], 2, MPI_LONG_LONG, 0, RESULT, MPI_COMM_WORLD, &send_reqs[q]);
 
                 MPI_Irecv(&tasks[q], 2, MPI_LONG_LONG, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &recv_reqs[q]);
             }
