@@ -5,7 +5,7 @@
 #include <sys/time.h>
 #include <math.h>
 
-// Pakiet: 16 384 elementów w pamięci L1 (reprezentuje 32 768 liczb nieparzystych)
+// Pakiet: 16 384 elementów w pamięci L1 (reprezentuje po prostu 16 384 kolejnych liczb)
 #define CHUNK_SIZE 16384 
 
 __host__ void errorexit(const char *s) {
@@ -16,22 +16,25 @@ __host__ void errorexit(const char *s) {
 // ---------------------------------------------------------
 // KROK 1: Inicjalizacja malutkiej tablicy bazowej (do sqrt(N))
 // ---------------------------------------------------------
-__global__ void init_base_sieve(char *base_sieve, long max_base_idx) {
+__global__ void init_base_sieve(char *base_sieve, long max_base_val) {
     long i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i <= max_base_idx) base_sieve[i] = 1;
+    if (i <= max_base_val) {
+        // Z góry wiemy, że 0 i 1 nie są pierwsze
+        base_sieve[i] = (i >= 2) ? 1 : 0;
+    }
 }
 
 // ---------------------------------------------------------
 // KROK 2: Sito na tablicy bazowej 
 // ---------------------------------------------------------
-__global__ void run_base_sieve(char *base_sieve, long max_base_idx) {
-    long i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i <= max_base_idx) {
-        long p = 2 * i + 3;
-        if (p * p <= (2 * max_base_idx + 3)) {
-            if (base_sieve[i] == 1) {
-                long start_idx = (p * p - 3) / 2;
-                for (long k = start_idx; k <= max_base_idx; k += p) {
+__global__ void run_base_sieve(char *base_sieve, long max_base_val) {
+    long p = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (p >= 2 && p <= max_base_val) {
+        if (p * p <= max_base_val) {
+            if (base_sieve[p] == 1) {
+                // Klasyczne wykreślanie wielokrotności
+                for (long k = p * p; k <= max_base_val; k += p) {
                     base_sieve[k] = 0;
                 }
             }
@@ -42,10 +45,11 @@ __global__ void run_base_sieve(char *base_sieve, long max_base_idx) {
 // ---------------------------------------------------------
 // KROK 3: Segmentowane Sito Główne w pamięci __shared__
 // ---------------------------------------------------------
-__global__ void segmented_sieve(const char *base_sieve, long target_limit, long max_idx, long max_base_idx, unsigned long long *global_primes, unsigned long long *global_twins) {
+__global__ void segmented_sieve(const char *base_sieve, long target_limit, long max_base_val, unsigned long long *global_primes, unsigned long long *global_twins) {
     
-    // Alokujemy CHUNK_SIZE + 1, żeby sprawdzanie pary siostrzanej na granicy pakietu nie wychodziło poza pamięć!
-    __shared__ char s_sieve[CHUNK_SIZE + 1];
+    // Alokujemy CHUNK_SIZE + 2. Dlaczego +2? Bo sprawdzając liczbę 'i', 
+    // jej para siostrzana jest pod indeksem 'i + 2'. Na granicy pakietu nie możemy wyjść poza tablicę.
+    __shared__ char s_sieve[CHUNK_SIZE + 2];
     __shared__ unsigned int block_primes;
     __shared__ unsigned int block_twins;
 
@@ -54,35 +58,37 @@ __global__ void segmented_sieve(const char *base_sieve, long target_limit, long 
         block_twins = 0;
     }
 
-    long chunk_start_idx = blockIdx.x * CHUNK_SIZE;
+    // Początkowa wartość, od której zaczyna się ten konkretny pakiet (np. pakiet nr 1 zaczyna się od 16384)
+    long chunk_start_val = blockIdx.x * CHUNK_SIZE;
     long thread_idx = threadIdx.x;
 
     // 1. Inicjalizacja pakietu współdzielonego
-    for (long i = thread_idx; i <= CHUNK_SIZE; i += blockDim.x) {
-        s_sieve[i] = 1;
+    for (long i = thread_idx; i < CHUNK_SIZE + 2; i += blockDim.x) {
+        long val = chunk_start_val + i;
+        // Wypełniamy jedynkami, ale pamiętamy, że 0 i 1 zawsze są zerami
+        s_sieve[i] = (val >= 2) ? 1 : 0;
     }
     __syncthreads();
 
-    long chunk_start_val = 2 * chunk_start_idx + 3;
-
     // 2. Równoległe wykreślanie w pakiecie z użyciem sita bazowego
-    for (long i = thread_idx; i <= max_base_idx; i += blockDim.x) {
-        if (base_sieve[i] == 1) {
-            long p = 2 * i + 3;
+    for (long p = thread_idx; p <= max_base_val; p += blockDim.x) {
+        if (p >= 2 && base_sieve[p] == 1) {
             
-            // Matematyka znajdująca pierwszą wielokrotność 'p' wpadającą w TEN konkretny pakiet
-            long start_val = p * p;
+            // Znajdujemy pierwszą wielokrotność 'p' wpadającą w TEN konkretny pakiet
+            long start_val = (chunk_start_val / p) * p;
             if (start_val < chunk_start_val) {
-                long step = chunk_start_val / p;
-                start_val = step * p;
-                if (start_val < chunk_start_val) start_val += p;
-                if (start_val % 2 == 0) start_val += p; // Musi być nieparzysta
+                start_val += p;
+            }
+            // Zabezpieczenie: wielokrotności zaczynamy wykreślać najwcześniej od p*p
+            if (start_val < p * p) {
+                start_val = p * p;
             }
 
-            long start_local_idx = (start_val - chunk_start_val) / 2;
+            // Zamiana wartości globalnej na lokalny indeks w pamięci L1 (od 0 do 16384)
+            long start_local_idx = start_val - chunk_start_val;
 
             // Wykreślanie w ultraszybkiej pamięci lokalnej
-            for (long j = start_local_idx; j <= CHUNK_SIZE; j += p) {
+            for (long j = start_local_idx; j < CHUNK_SIZE + 2; j += p) {
                 s_sieve[j] = 0;
             }
         }
@@ -94,20 +100,16 @@ __global__ void segmented_sieve(const char *base_sieve, long target_limit, long 
     unsigned int local_t = 0;
 
     for (long i = thread_idx; i < CHUNK_SIZE; i += blockDim.x) {
-        long global_i = chunk_start_idx + i;
+        long val = chunk_start_val + i;
         
-        if (global_i <= max_idx) {
-            long val = 2 * global_i + 3;
-            
-            if (val <= target_limit) {
-                if (s_sieve[i] == 1) {
-                    local_p++;
-                    
-                    if (val + 2 <= target_limit) {
-                        // Dzięki overlapowi CHUNK_SIZE + 1, indeks i + 1 zawsze leży w pamięci s_sieve
-                        if (s_sieve[i + 1] == 1) {
-                            local_t++;
-                        }
+        if (val <= target_limit) {
+            if (s_sieve[i] == 1) {
+                local_p++;
+                
+                // Sprawdzanie pary siostrzanej. Dzięki +2 w definicji tablicy, odczyt i+2 jest bezpieczny.
+                if (val + 2 <= target_limit) {
+                    if (s_sieve[i + 2] == 1) {
+                        local_t++;
                     }
                 }
             }
@@ -131,16 +133,12 @@ int main(int argc, char **argv) {
     
     long target_limit = ins__args.arg; 
 
+    // Maksymalna wartość dla sita bazowego to po prostu pierwiastek z limitu
     long max_val = target_limit + 2; 
-    long max_idx = (max_val - 3) / 2;
-    if (max_idx < 0) max_idx = 0;
+    long max_base_val = (long)sqrt((double)max_val);
 
-    // Obliczamy rozmiar dla małego Sita Bazowego do pierwiastka
-    long sqrt_max = (long)sqrt((double)max_val);
-    long max_base_idx = (sqrt_max - 3) / 2;
-    if (max_base_idx < 0) max_base_idx = 0;
-
-    unsigned long long h_primes = (target_limit >= 2) ? 1 : 0; 
+    // Zaczynamy zliczanie od zera - nie odrzucamy już dwójki
+    unsigned long long h_primes = 0; 
     unsigned long long h_twins = 0;
 
     unsigned long long *d_primes = NULL;
@@ -150,8 +148,8 @@ int main(int argc, char **argv) {
     if (cudaSuccess != cudaMalloc((void **)&d_primes, sizeof(unsigned long long))) errorexit("Error allocating primes");
     if (cudaSuccess != cudaMalloc((void **)&d_twins, sizeof(unsigned long long))) errorexit("Error allocating twins");
     
-    // Zauważ, jak mało pamięci alokujemy - max 4 kilobajty zamiast dawnych dziesiątek megabajtów!
-    if (cudaSuccess != cudaMalloc((void **)&d_base_sieve, (max_base_idx + 1) * sizeof(char))) errorexit("Error allocating base sieve");
+    // Alokujemy bazowe sito tylko do pierwiastka (np. 7071 bajtów dla 50M)
+    if (cudaSuccess != cudaMalloc((void **)&d_base_sieve, (max_base_val + 1) * sizeof(char))) errorexit("Error allocating base sieve");
 
     if (cudaSuccess != cudaMemcpy(d_primes, &h_primes, sizeof(unsigned long long), cudaMemcpyHostToDevice)) errorexit("Error copying");
     if (cudaSuccess != cudaMemcpy(d_twins, &h_twins, sizeof(unsigned long long), cudaMemcpyHostToDevice)) errorexit("Error copying");
@@ -162,16 +160,17 @@ int main(int argc, char **argv) {
     int threadsInBlock = 1024;
 
     // --- ETAP 1 & 2: Szybkie wygenerowanie bazy ---
-    int blocksBaseInit = (max_base_idx + 1 + threadsInBlock - 1) / threadsInBlock;
-    init_base_sieve<<<blocksBaseInit, threadsInBlock>>>(d_base_sieve, max_base_idx);
+    int blocksBaseInit = (max_base_val + 1 + threadsInBlock - 1) / threadsInBlock;
+    init_base_sieve<<<blocksBaseInit, threadsInBlock>>>(d_base_sieve, max_base_val);
     cudaDeviceSynchronize();
     
-    run_base_sieve<<<blocksBaseInit, threadsInBlock>>>(d_base_sieve, max_base_idx);
+    run_base_sieve<<<blocksBaseInit, threadsInBlock>>>(d_base_sieve, max_base_val);
     cudaDeviceSynchronize();
 
-    // --- ETAP 3: Zmasowany atak Segmentowanego Sita ---
-    int blocksSegmented = (max_idx + CHUNK_SIZE) / CHUNK_SIZE; // Wystarczy zaledwie ok. 1500 bloków dla 50M
-    segmented_sieve<<<blocksSegmented, threadsInBlock>>>(d_base_sieve, target_limit, max_idx, max_base_idx, d_primes, d_twins);
+    // --- ETAP 3: Segmentowane Sito ---
+    // Każdy blok przetwarza paczkę CHUNK_SIZE liczb
+    int blocksSegmented = (target_limit + 1 + CHUNK_SIZE - 1) / CHUNK_SIZE; 
+    segmented_sieve<<<blocksSegmented, threadsInBlock>>>(d_base_sieve, target_limit, max_base_val, d_primes, d_twins);
     cudaDeviceSynchronize();
 
     gettimeofday(&ins__tstop, NULL);
